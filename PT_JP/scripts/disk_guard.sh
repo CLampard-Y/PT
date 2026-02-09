@@ -9,7 +9,7 @@
 #
 #  部署: crontab → */5 * * * * /path/to/disk_guard.sh
 # ===========================================================
-set -euo pipefail
+set -uo pipefail
 
 # ===================== 配置 =====================
 DATA_DIR="/home/pt/PT_JP/data"
@@ -19,8 +19,17 @@ LOG_FILE="/var/log/pt-disk-guard.log"
 
 # qBittorrent WebUI API
 QB_URL="http://127.0.0.1:8080"
-QB_USER="admin"
-QB_PASS="你的WebUI密码"       # ← 部署时修改
+
+# 从 .env 文件读取密码 (避免硬编码)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+if [[ -f "${ENV_FILE}" ]]; then
+    QB_USER=$(grep -oP '^QB_USER=\K.*' "${ENV_FILE}" 2>/dev/null || echo "admin")
+    QB_PASS=$(grep -oP '^QB_PASS=\K.*' "${ENV_FILE}" 2>/dev/null || echo "")
+else
+    QB_USER="admin"
+    QB_PASS=""
+fi
 
 # ===================== 函数 =====================
 log() {
@@ -40,7 +49,7 @@ qb_pause_all() {
     qb_login
     curl -s -b "/tmp/.qb_cookie" \
         "${QB_URL}/api/v2/torrents/pause" \
-        -d "hashes=all" > /dev/null 2>&1
+        -d "hashes=all" > /dev/null 2>&1 || true
 }
 
 # ===================== 检查 =====================
@@ -62,14 +71,18 @@ FREE_MB=$(df -m "${DATA_DIR}" 2>/dev/null | awk 'NR==2{print $4}')
 log "磁盘: ${DISK_PCT}% | 剩余: ${FREE_MB}MB | Inode: ${INODE_PCT}% | 文件: ${FILE_COUNT}"
 
 # ---- 紧急磁盘保护 (qB原生预留的最后防线) ----
-if [[ ${DISK_PCT} -ge ${DISK_EMERGENCY_PERCENT} ]]; then
+if [[ -n "${DISK_PCT}" ]] && [[ ${DISK_PCT} -ge ${DISK_EMERGENCY_PERCENT} ]]; then
     log "🚨 紧急! 磁盘 ${DISK_PCT}% >= ${DISK_EMERGENCY_PERCENT}%! 暂停所有种子!"
-    qb_pause_all
-    log "⏸️  已通过API暂停所有种子"
+    if [[ -n "${QB_PASS}" ]]; then
+        qb_pause_all
+        log "⏸️  已通过API暂停所有种子"
+    else
+        log "⚠️  未配置QB_PASS，无法调用API暂停。请在 .env 中添加 QB_PASS=你的密码"
+    fi
 fi
 
 # ---- Inode 保护 ----
-if [[ ${INODE_PCT} -ge ${INODE_WARN_PERCENT} ]]; then
+if [[ -n "${INODE_PCT}" ]] && [[ ${INODE_PCT} -ge ${INODE_WARN_PERCENT} ]]; then
     log "⚠️  Inode ${INODE_PCT}% >= ${INODE_WARN_PERCENT}%! 请清理小文件"
 fi
 
