@@ -3,6 +3,8 @@
 #  PT_JP 日本节点 — 部署验证脚本
 #  用法: bash PT_JP/scripts/verify.sh
 #  功能: 一键检查所有组件是否正常运行
+#
+#  前置: Server-Ops 系统初始化 + bootstrap.sh 代码拉取
 # ===========================================================
 set -uo pipefail
 
@@ -27,10 +29,10 @@ echo ""
 echo "--- 系统层 ---"
 
 BBR=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
-[[ "${BBR}" == "bbr" ]] && pass "BBR: ${BBR}" || fail "BBR: ${BBR} (期望 bbr)"
+[[ "${BBR}" == "bbr" ]] && pass "BBR: ${BBR}" || fail "BBR: ${BBR} (期望 bbr, 请检查 Server-Ops Layer 1)"
 
 FILEMAX=$(sysctl -n fs.file-max 2>/dev/null)
-[[ ${FILEMAX} -ge 1048576 ]] && pass "file-max: ${FILEMAX}" || fail "file-max: ${FILEMAX} (期望 >= 1048576)"
+[[ ${FILEMAX} -ge 1048576 ]] && pass "file-max: ${FILEMAX}" || fail "file-max: ${FILEMAX} (期望 >= 1048576, 请检查 Server-Ops Layer 1)"
 
 ULIMIT_N=$(ulimit -n 2>/dev/null)
 [[ ${ULIMIT_N} -ge 1048576 ]] && pass "ulimit -n: ${ULIMIT_N}" || warn "ulimit -n: ${ULIMIT_N} (期望 1048576，重新登录后生效)"
@@ -49,13 +51,13 @@ echo "--- Docker 层 ---"
 if command -v docker &>/dev/null; then
     pass "Docker: $(docker --version | grep -oP '\d+\.\d+\.\d+')"
 else
-    fail "Docker: 未安装"
+    fail "Docker: 未安装 (请先运行 Server-Ops 初始化)"
 fi
 
 if docker compose version &>/dev/null; then
     pass "Compose: $(docker compose version --short)"
 else
-    fail "Docker Compose: 未安装"
+    fail "Docker Compose: 未安装 (请先运行 Server-Ops 初始化)"
 fi
 
 TR_STATUS=$(docker inspect -f '{{.State.Status}}' transmission_jp 2>/dev/null || echo "not_found")

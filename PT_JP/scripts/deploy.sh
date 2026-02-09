@@ -2,10 +2,12 @@
 # ===========================================================
 #  PT_JP 日本节点 — 容器部署与配置脚本
 #
-#  前置条件: 已运行 bootstrap.sh 完成环境初始化并重启
+#  前置条件:
+#    1. 已通过 Server-Ops 完成系统初始化 (Docker/BBR/SSH)
+#    2. 已通过 bootstrap.sh 拉取 PT 业务代码
 #  执行方式: cd /home/BT/PT_JP && sudo bash scripts/deploy.sh
 #
-#  本脚本负责:
+#  本脚本负责 (纯业务逻辑):
 #    阶段 D: 启动 Transmission + FlexGet 容器
 #    阶段 E: 安装 Transmission Web Control + 覆盖配置
 #    阶段 F: 配置 FlexGet RSS 变量
@@ -43,9 +45,9 @@ echo "╚═══════════════════════�
 echo ""
 
 # ===================== 前置环境检查 =====================
-# 确认 bootstrap.sh 已经运行过
+# 确认 Server-Ops 已完成系统初始化
 if ! command -v docker &>/dev/null; then
-    error "Docker 未安装！请先运行 bootstrap.sh:\n  sudo bash /home/BT/common_scripts/bootstrap.sh"
+    error "Docker 未安装！请先运行 Server-Ops 初始化:\n  git clone <REPO> /home/Server-Ops && sudo bash /home/Server-Ops/setup.sh"
 fi
 
 if [[ ! -d "${DEPLOY_DIR}/${NODE_NAME}" ]]; then
@@ -292,7 +294,7 @@ echo "║    TR日志:    docker logs transmission_jp --tail 50   ║"
 echo "║    FG日志:    docker logs flexget_jp --tail 50        ║"
 echo "║    FG手动执行: docker exec flexget_jp flexget execute ║"
 echo "║    磁盘监控:  df -h /home/BT/PT_JP/data               ║"
-echo "║    拉取更新:  cd /home/BT && git pull origin main     ║"
+echo "║    拉取更新:  cd /home/BT && git pull origin main      ║"
 echo "║    重启全部:  cd /home/BT/PT_JP && docker compose restart ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
