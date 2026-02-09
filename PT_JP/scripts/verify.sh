@@ -58,15 +58,14 @@ else
     fail "Docker Compose: 未安装"
 fi
 
-CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' qbittorrent_jp 2>/dev/null || echo "not_found")
-[[ "${CONTAINER_STATUS}" == "running" ]] && pass "容器状态: ${CONTAINER_STATUS}" || fail "容器状态: ${CONTAINER_STATUS} (期望 running)"
+TR_STATUS=$(docker inspect -f '{{.State.Status}}' transmission_jp 2>/dev/null || echo "not_found")
+[[ "${TR_STATUS}" == "running" ]] && pass "Transmission: ${TR_STATUS}" || fail "Transmission: ${TR_STATUS} (期望 running)"
 
-if [[ "${CONTAINER_STATUS}" == "running" ]]; then
-    MEM_BYTES=$(docker inspect -f '{{.HostConfig.Memory}}' qbittorrent_jp 2>/dev/null)
-    MEM_GB=$(echo "${MEM_BYTES}" | awk '{printf "%.0f", $1/1024/1024/1024}')
-    [[ ${MEM_GB} -le 4 && ${MEM_GB} -gt 0 ]] && pass "内存限制: ${MEM_GB}GB" || warn "内存限制: ${MEM_GB}GB (期望 4GB)"
+FG_STATUS=$(docker inspect -f '{{.State.Status}}' flexget_jp 2>/dev/null || echo "not_found")
+[[ "${FG_STATUS}" == "running" ]] && pass "FlexGet: ${FG_STATUS}" || warn "FlexGet: ${FG_STATUS}"
 
-    ULIMIT_CONTAINER=$(docker exec qbittorrent_jp sh -c 'ulimit -n' 2>/dev/null || echo "0")
+if [[ "${TR_STATUS}" == "running" ]]; then
+    ULIMIT_CONTAINER=$(docker exec transmission_jp sh -c 'ulimit -n' 2>/dev/null || echo "0")
     [[ ${ULIMIT_CONTAINER} -ge 1048576 ]] && pass "容器ulimit: ${ULIMIT_CONTAINER}" || warn "容器ulimit: ${ULIMIT_CONTAINER}"
 fi
 
@@ -101,12 +100,12 @@ echo ""
 # ===== 4. 网络层 =====
 echo "--- 网络层 ---"
 
-WEBUI_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:8080 2>/dev/null)
+WEBUI_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://localhost:9091/transmission/web/ 2>/dev/null)
 [[ "${WEBUI_CODE}" == "200" || "${WEBUI_CODE}" == "401" ]] && \
-    pass "WebUI: HTTP ${WEBUI_CODE}" || fail "WebUI: HTTP ${WEBUI_CODE} (期望 200/401)"
+    pass "TR WebUI: HTTP ${WEBUI_CODE}" || fail "TR WebUI: HTTP ${WEBUI_CODE} (期望 200/401)"
 
-BT_LISTEN=$(ss -tlnp 2>/dev/null | grep ':6881' | head -1)
-[[ -n "${BT_LISTEN}" ]] && pass "BT端口 6881: LISTENING" || warn "BT端口 6881: 未检测到 (可能在容器内监听)"
+BT_LISTEN=$(ss -tlnp 2>/dev/null | grep ':51413' | head -1)
+[[ -n "${BT_LISTEN}" ]] && pass "BT端口 51413: LISTENING" || warn "BT端口 51413: 未检测到 (可能在容器内监听)"
 
 echo ""
 

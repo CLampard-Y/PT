@@ -6,9 +6,9 @@
 #  执行方式: cd /home/pt/PT_JP && sudo bash scripts/deploy.sh
 #
 #  本脚本负责:
-#    阶段 D: 启动 qBittorrent 容器
-#    阶段 E: 覆盖性能配置
-#    阶段 F: 指导 RSS 配置
+#    阶段 D: 启动 Transmission + FlexGet 容器
+#    阶段 E: 安装 Transmission Web Control + 覆盖配置
+#    阶段 F: 配置 FlexGet RSS 变量
 #    阶段 G: 注册监控任务
 # ===========================================================
 set -euo pipefail
@@ -38,7 +38,7 @@ echo "╔═══════════════════════�
 echo "║       PT_JP 日本节点 — 容器部署                  ║"
 echo "╠══════════════════════════════════════════════════╣"
 echo "║  目录:   ${DEPLOY_DIR}/${NODE_NAME}"
-echo "║  客户端: qBittorrent 4.6.7 Official"
+echo "║  客户端: Transmission 4.0.6 + FlexGet RSS"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
@@ -54,23 +54,31 @@ fi
 
 info "前置检查通过: Docker $(docker --version | grep -oP '\d+\.\d+\.\d+')"
 
+# 清理旧的 qBittorrent 容器 (如果存在)
+if docker ps -a --format '{{.Names}}' | grep -q 'qbittorrent_jp'; then
+    warn "检测到旧的 qBittorrent 容器，正在清理..."
+    docker rm -f qbittorrent_jp 2>/dev/null || true
+    info "旧容器已清理"
+fi
+
 # =============================================================
-#  阶段 D: 启动 qBittorrent 容器
+#  阶段 D: 启动 Transmission + FlexGet 容器
 # =============================================================
-phase "D" "启动 qBittorrent 容器"
+phase "D" "启动 Transmission + FlexGet 容器"
 
 cd "${DEPLOY_DIR}/${NODE_NAME}"
 
-# 创建数据目录
-mkdir -p ./data/complete ./data/incomplete
-info "数据目录已创建: ./data/complete, ./data/incomplete"
+# 创建目录结构
+mkdir -p ./data/complete ./data/incomplete ./watch
+mkdir -p ./config/transmission ./config/flexget
+info "目录结构已创建"
 
 # 创建 .env 文件
 if [[ ! -f .env ]]; then
     if [[ -f .env.example ]]; then
         cp .env.example .env
-        warn ".env 已从模板创建，请务必编辑填入真实密码和 Passkey!"
-        warn "执行: vim ${DEPLOY_DIR}/${NODE_NAME}/.env"
+        warn ".env 已从模板创建，请务必编辑!"
+        warn "必须修改: TR_PASS, MT_RSS_URL (passkey)"
         echo ""
         read -rp "是否现在编辑 .env？(Y/n): " EDIT_ENV
         if [[ "${EDIT_ENV}" != "n" && "${EDIT_ENV}" != "N" ]]; then
@@ -83,141 +91,149 @@ else
     info ".env 文件已存在，跳过创建"
 fi
 
-# ⚠️ 关键: 备份仓库预置配置 (容器首次启动会覆盖它!)
-QB_CONF_REPO="./config/qBittorrent/qBittorrent.conf"
-QB_CONF_BACKUP="/tmp/qBittorrent.conf.repo_preset"
-if [[ -f "${QB_CONF_REPO}" ]]; then
-    cp "${QB_CONF_REPO}" "${QB_CONF_BACKUP}"
-    info "已备份仓库预置配置到 ${QB_CONF_BACKUP}"
+# 备份仓库预置的 settings.json (容器首次启动会覆盖)
+TR_CONF_REPO="./config/transmission/settings.json"
+TR_CONF_BACKUP="/tmp/settings.json.repo_preset"
+if [[ -f "${TR_CONF_REPO}" ]]; then
+    cp "${TR_CONF_REPO}" "${TR_CONF_BACKUP}"
+    info "已备份仓库预置 settings.json"
 fi
 
-# 首次启动容器 (会生成默认配置，覆盖仓库预置)
-info "首次启动容器 (生成默认配置)..."
-docker compose up -d
+# 启动 Transmission (先不启动 FlexGet，等配置完成)
+info "启动 Transmission 容器..."
+docker compose up -d transmission
 
-info "等待容器初始化 (15秒)..."
+info "等待 Transmission 初始化 (15秒)..."
 sleep 15
 
-# 获取初始密码
+# 读取 .env 中的认证信息用于显示
+TR_USER_DISPLAY=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
+VPS_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo '你的IP')
+
 echo ""
 echo "  ┌──────────────────────────────────────────┐"
-echo "  │  📋 qBittorrent 初始登录信息             │"
+echo "  │  📋 Transmission 登录信息                │"
 echo "  ├──────────────────────────────────────────┤"
-INIT_PASS=$(docker logs qbittorrent_jp 2>&1 | grep -oP 'temporary password.*: \K.*' || echo '请查看容器日志')
-printf "  │  地址: http://%-27s│\n" "$(curl -s --max-time 5 ifconfig.me 2>/dev/null || echo '你的IP'):8080"
-echo "  │  用户: admin                             │"
-printf "  │  密码: %-33s│\n" "${INIT_PASS}"
-echo "  │                                          │"
-echo "  │  ⚠️  请立即登录并修改密码！              │"
+printf "  │  地址: http://%-27s│\n" "${VPS_IP}:9091"
+printf "  │  用户: %-33s│\n" "${TR_USER_DISPLAY}"
+echo "  │  密码: (你在 .env 中设置的 TR_PASS)      │"
 echo "  └──────────────────────────────────────────┘"
 echo ""
 
 # 验证容器状态
-if docker ps --format '{{.Names}}' | grep -q 'qbittorrent_jp'; then
-    info "容器运行正常 ✓"
+if docker ps --format '{{.Names}}' | grep -q 'transmission_jp'; then
+    info "Transmission 容器运行正常 ✓"
 else
-    error "容器启动失败，请检查: docker logs qbittorrent_jp"
+    error "Transmission 启动失败，请检查: docker logs transmission_jp"
 fi
 
 # =============================================================
-#  阶段 E: 覆盖性能配置
+#  阶段 E: 安装 TWC + 覆盖 Transmission 配置
 # =============================================================
-phase "E" "覆盖 qBittorrent 性能配置"
+phase "E" "安装 Transmission Web Control + 覆盖配置"
 
-# ⚠️ 核心逻辑:
-#   容器首次启动会在 ./config/qBittorrent/ 下生成默认 qBittorrent.conf
-#   我们需要用仓库预置的优化配置覆盖它
-#   流程: 停止容器 → 恢复备份 → 重新启动
+# ---- 安装 Transmission Web Control (第三方WebUI) ----
+TWC_DIR="./config/transmission/transmission-web-control"
+if [[ ! -d "${TWC_DIR}/src" ]]; then
+    info "安装 Transmission Web Control..."
+    mkdir -p "${TWC_DIR}"
+    TWC_VER="v1.6.1-update1"
+    if wget -qO /tmp/twc.tar.gz \
+        "https://github.com/ronggang/transmission-web-control/archive/refs/tags/${TWC_VER}.tar.gz" 2>/dev/null; then
+        tar -xzf /tmp/twc.tar.gz -C /tmp/
+        cp -r /tmp/transmission-web-control-*/src "${TWC_DIR}/"
+        rm -rf /tmp/twc.tar.gz /tmp/transmission-web-control-*
+        info "TWC 安装完成 ✓"
+    else
+        warn "TWC 下载失败，将使用原版 WebUI"
+    fi
+else
+    info "TWC 已存在，跳过安装"
+fi
 
-QB_CONF="./config/qBittorrent/qBittorrent.conf"
+# ---- 覆盖 settings.json ----
+TR_CONF="./config/transmission/settings.json"
 
-if [[ -f "${QB_CONF_BACKUP}" ]]; then
-    info "检测到仓库预置配置备份"
+if [[ -f "${TR_CONF_BACKUP}" ]]; then
+    info "用仓库预置配置覆盖默认 settings.json..."
 
-    # 停止容器 (运行中修改配置会被覆盖)
-    info "停止容器..."
-    docker compose stop
+    docker compose stop transmission
     sleep 3
-    
-    # 用仓库预置配置覆盖容器生成的默认配置
-    cp "${QB_CONF_BACKUP}" "${QB_CONF}"
-    info "已用仓库预置配置覆盖默认配置"
-    rm -f "${QB_CONF_BACKUP}"
 
-    # 重新启动
-    info "重新启动容器..."
-    docker compose up -d
+    cp "${TR_CONF_BACKUP}" "${TR_CONF}"
+    rm -f "${TR_CONF_BACKUP}"
+
+    # 将 .env 中的密码写入 settings.json
+    TR_PASS_VAL=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo 'changeme')
+    TR_USER_VAL=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
+    python3 -c "
+import json
+with open('${TR_CONF}', 'r') as f:
+    cfg = json.load(f)
+cfg['rpc-username'] = '${TR_USER_VAL}'
+cfg['rpc-password'] = '${TR_PASS_VAL}'
+with open('${TR_CONF}', 'w') as f:
+    json.dump(cfg, f, indent=4)
+" 2>/dev/null && info "RPC 认证已写入 settings.json" || \
+        warn "自动写入失败，请手动编辑 ${TR_CONF}"
+
+    docker compose up -d transmission
     sleep 10
 
     # 验证关键参数
-    if grep -q 'MaxActiveTorrents=-1' "${QB_CONF}" 2>/dev/null; then
-        info "做种无限制 (-1) ✓"
-    fi
-    if grep -q 'MaxActiveDownloads=5' "${QB_CONF}" 2>/dev/null; then
-        info "下载队列限制 5 ✓"
-    fi
-    if grep -q 'GlobalUPSpeedLimit=4096' "${QB_CONF}" 2>/dev/null; then
-        info "上传限速 4MB/s ✓"
-    fi
-    if grep -q 'DiskIOReadMode=0' "${QB_CONF}" 2>/dev/null; then
-        info "磁盘IO模式 (OS Cache) ✓"
-    fi
+    grep -q '"cache-size-mb": 2048' "${TR_CONF}" 2>/dev/null && info "磁盘缓存 2048MB ✓"
+    grep -q '"peer-limit-global": 2000' "${TR_CONF}" 2>/dev/null && info "全局连接数 2000 ✓"
+    grep -q '"seed-queue-enabled": false' "${TR_CONF}" 2>/dev/null && info "做种无限制 ✓"
 
-    # ⚠️ 覆盖配置后密码哈希丢失，qB会生成新临时密码
-    # 必须重新获取并显示给用户
-    NEW_PASS=$(docker logs qbittorrent_jp 2>&1 | grep -oP 'temporary password.*: \K.*' | tail -1 || echo '请查看容器日志')
-    echo ""
-    echo "  ┌──────────────────────────────────────────┐"
-    echo "  │  ⚠️  配置覆盖后密码已更新！              │"
-    echo "  ├──────────────────────────────────────────┤"
-    printf "  │  新密码: %-33s│\n" "${NEW_PASS}"
-    echo "  │  请用此密码登录 WebUI                   │"
-    echo "  └──────────────────────────────────────────┘"
-    echo ""
-
-    info "性能配置覆盖完成，容器已重启 ✓"
+    info "Transmission 配置覆盖完成 ✓"
 else
-    warn "未找到预置配置备份，请手动编辑: vim ${QB_CONF}"
-    warn "修改后执行: docker compose restart"
+    warn "未找到预置配置备份，使用容器默认配置"
 fi
 
 # =============================================================
-#  阶段 F: 配置 RSS 自动下载 (WebUI 手动操作)
+#  阶段 F: 配置 FlexGet RSS 变量 + 启动
 # =============================================================
-phase "F" "配置 RSS 自动下载"
+phase "F" "配置 FlexGet RSS"
 
-echo "  RSS 配置需要在 WebUI 中手动完成，步骤如下:"
+# 从 .env 读取变量写入 FlexGet variables.yml
+FG_VARS="./config/flexget/variables.yml"
+MT_RSS=$(grep -oP '^MT_RSS_URL=\K.*' .env 2>/dev/null || echo '')
+TR_USER_FG=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
+TR_PASS_FG=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo 'changeme')
+
+if [[ -n "${MT_RSS}" && "${MT_RSS}" != *"YOUR_PASSKEY_HERE"* ]]; then
+    cat > "${FG_VARS}" << FGEOF
+tr_user: ${TR_USER_FG}
+tr_pass: ${TR_PASS_FG}
+mt_rss_url: ${MT_RSS}
+FGEOF
+    info "FlexGet variables.yml 已生成"
+else
+    warn "MT_RSS_URL 未配置或仍为默认值!"
+    warn "请编辑 .env 填入真实 passkey，然后重新运行此脚本"
+    warn "或手动编辑: vim ${FG_VARS}"
+fi
+
+# 启动 FlexGet
+info "启动 FlexGet 容器..."
+docker compose up -d flexget
+sleep 10
+
+if docker ps --format '{{.Names}}' | grep -q 'flexget_jp'; then
+    info "FlexGet 容器运行正常 ✓"
+    # 测试执行一次
+    info "测试 FlexGet RSS 抓取 (dry-run)..."
+    docker exec flexget_jp flexget --test execute --tasks mt_free_seed 2>&1 | tail -5 || true
+else
+    warn "FlexGet 启动失败，请检查: docker logs flexget_jp"
+fi
+
 echo ""
-echo "  1. 浏览器打开 WebUI 并登录"
+echo "  FlexGet 自动化说明:"
+echo "  - 每15分钟自动抓取 MT Free 种子 (< 100MB)"
+echo "  - 自动推送到 Transmission 下载"
+echo "  - 无需手动配置 RSS 规则 ✓"
 echo ""
-echo "  2. 添加 RSS 源:"
-echo "     View → RSS → New subscription"
-echo "     URL: 粘贴 .env 中的 MT_RSS_URL"
-echo "     (https://kp.m-team.cc/api/rss/dl?passkey=xxx&https=1&spstate=2)"
-echo ""
-echo "  3. 创建自动下载规则:"
-echo "     RSS → RSS Downloader (扳手图标) → '+'"
-echo "     规则名:    MT-Free-SmallSeed"
-echo "     Size min:  1 MB"
-echo "     Size max:  500 MB"
-echo "     Category:  seed_farming"
-echo "     Save to:   /downloads/complete"
-echo "     Apply to:  ☑ 你的MT RSS源"
-echo "     ☑ Enable Rule"
-echo ""
-echo "  4. 验证 Options → Downloads:"
-echo "     ☑ 磁盘剩余空间低于 20480 MB 时停止下载"
-echo ""
-echo "  5. ⚠️  修改密码后，回填到 .env 文件:"
-echo "     vim ${DEPLOY_DIR}/${NODE_NAME}/.env"
-echo "     将 QB_PASS=CHANGE_ME_AFTER_FIRST_LOGIN 改为你的新密码"
-echo "     (磁盘守护脚本需要此密码调用紧急暂停API)"
-echo ""
-warn "请在 WebUI 中完成以上 RSS 配置后继续"
-read -rp "RSS 已配置完成？(y/N): " RSS_DONE
-[[ "${RSS_DONE}" == "y" || "${RSS_DONE}" == "Y" ]] && \
-    info "RSS 配置已确认" || \
-    warn "请稍后手动完成 RSS 配置"
 
 # =============================================================
 #  阶段 G: 注册监控任务 + 最终验证
@@ -250,20 +266,22 @@ echo "╠═══════════════════════�
 echo "║                                                      ║"
 printf "║  %-14s %-38s║\n" "BBR:" "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "Docker:" "$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+')"
-printf "║  %-14s %-38s║\n" "容器状态:" "$(docker inspect -f '{{.State.Status}}' qbittorrent_jp 2>/dev/null)"
-printf "║  %-14s %-38s║\n" "内存限制:" "$(docker inspect -f '{{.HostConfig.Memory}}' qbittorrent_jp 2>/dev/null | awk '{printf "%.0fGB", $1/1024/1024/1024}')"
+printf "║  %-14s %-38s║\n" "TR状态:" "$(docker inspect -f '{{.State.Status}}' transmission_jp 2>/dev/null)"
+printf "║  %-14s %-38s║\n" "FG状态:" "$(docker inspect -f '{{.State.Status}}' flexget_jp 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "磁盘使用:" "$(df -h ${DEPLOY_DIR}/${NODE_NAME}/data 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}')"
 printf "║  %-14s %-38s║\n" "Sparse:" "$(cd ${DEPLOY_DIR} && git sparse-checkout list 2>/dev/null | tr '\n' ', ')"
 echo "║                                                      ║"
 echo "╠══════════════════════════════════════════════════════╣"
 echo "║  📌 日常运维命令:                                    ║"
-echo "║    查看状态:  docker ps                              ║"
-echo "║    查看资源:  docker stats qbittorrent_jp --no-stream║"
-echo "║    查看日志:  docker logs qbittorrent_jp --tail 50   ║"
-echo "║    磁盘监控:  df -h /home/pt/PT_JP/data              ║"
-echo "║    拉取更新:  cd /home/pt && git pull origin main    ║"
-echo "║    重启服务:  cd /home/pt/PT_JP && docker compose restart ║"
+echo "║    容器状态:  docker ps                              ║"
+echo "║    TR资源:    docker stats transmission_jp --no-stream║"
+echo "║    TR日志:    docker logs transmission_jp --tail 50   ║"
+echo "║    FG日志:    docker logs flexget_jp --tail 50        ║"
+echo "║    FG手动执行: docker exec flexget_jp flexget execute ║"
+echo "║    磁盘监控:  df -h /home/pt/PT_JP/data               ║"
+echo "║    拉取更新:  cd /home/pt && git pull origin main     ║"
+echo "║    重启全部:  cd /home/pt/PT_JP && docker compose restart ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
-info "建议重启一次 VPS 使所有内核参数完全生效: sudo reboot"
+info "部署完成！Transmission + FlexGet 已开始自动运行"

@@ -7,11 +7,23 @@
 # 真实环境变量（含密码/passkey）
 **/.env
 
-# 客户端运行时生成的文件
-*/config/qBittorrent/BT_backup/
-*/config/qBittorrent/lockfile
-*/config/qBittorrent/ipc-socket
-*/config/qBittorrent/logs/
+# 旧 qBittorrent 配置 (已迁移到 Transmission)
+*/config/qBittorrent/
+
+# Transmission 运行时文件
+*/config/transmission/torrents/
+*/config/transmission/resume/
+*/config/transmission/blocklists/
+*/config/transmission/stats.json
+*/config/transmission/dht.dat
+
+# FlexGet 运行时文件
+*/config/flexget/db-config.sqlite
+*/config/flexget/.config-lock
+*/config/flexget/.FlexGet/
+
+# FlexGet 敏感变量 (含passkey)
+*/config/flexget/variables.yml
 
 # watch 目录中的种子文件
 */watch/*.torrent

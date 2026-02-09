@@ -1,0 +1,75 @@
+# ===========================================================
+#  FlexGet — MT站 RSS 自动下载配置
+#  安全策略: URL层 spstate=2(Free) + FlexGet层 体积<100MB 双重过滤
+#
+#  手动测试: docker exec flexget_jp flexget execute --tasks mt_free_seed
+#  查看日志: docker exec flexget_jp flexget log --lines 50
+# ===========================================================
+
+schedules:
+  - tasks: ['mt_free_seed']
+    interval:
+      minutes: 15
+
+tasks:
+  mt_free_seed:
+    rss:
+      url: '{? mt_rss_url ?}'
+      all_entries: no
+
+    # 体积过滤: 仅下载 1MB ~ 100MB 的小种子
+    content_size:
+      min: 1
+      max: 100
+      strict: no
+
+    # 去重: 防止重复下载已有种子
+    seen: yes
+
+    # 下载前检查磁盘空间: 剩余 < 3GB 时停止
+    free_space:
+      path: /downloads
+      space: 3000
+
+    # 推送到 Transmission
+    transmission:
+      host: transmission
+      port: 9091
+      username: '{? tr_user ?}'
+      password: '{? tr_pass ?}'
+      path: /downloads/complete
+      addpaused: no
+
+    # 通知日志
+    notify:
+      task:
+        via:
+          - pushover:
+              user_key: ''
+              api_key: ''
+            # 如不需要推送通知，保持空即可，不会报错
+
+  # ============================================
+  #  清理任务: 移除错误/无效种子 (每小时执行)
+  # ============================================
+  clean_transmission:
+    disable: [seen, retry_failed]
+    from_transmission:
+      host: transmission
+      port: 9091
+      username: '{? tr_user ?}'
+      password: '{? tr_pass ?}'
+    if:
+      # 删除状态为错误的种子
+      - transmission_status == 'stopped' and transmission_errorString != '':
+          transmission:
+            host: transmission
+            port: 9091
+            username: '{? tr_user ?}'
+            password: '{? tr_pass ?}'
+            action: purge
+
+# ===========================================================
+#  变量文件引用 (敏感信息不写在此文件中)
+# ===========================================================
+variables: variables.yml
