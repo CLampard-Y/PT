@@ -22,9 +22,10 @@ PT/
 
 ## 部署方式
 
-各节点 VPS 使用 Sparse Checkout 只拉取所需目录：
+各节点 VPS 使用 Sparse Checkout 只拉取所需目录，统一部署到 `/home/BT`：
 
 ```bash
+cd /home/BT
 git init
 git remote add origin <REPO_URL>
 git sparse-checkout init --cone
@@ -34,11 +35,12 @@ git pull origin main
 
 ## 客户端
 
-- **qBittorrent Official 4.6.7** (MT白名单合规)
-- 禁止使用 Enhanced Edition
+- **Transmission 4.0.6 Official** (MT白名单合规) + **FlexGet RSS**
+- 低优先级后台运行，CPU/内存严格隔离
 
 ## 核心策略
 
-- 长期挂载 3000-5000 个小体积种子
+- 长期挂载 10,000+ 个极小体积种子 (10-90MB)
 - 目标：刷平均做种时间
-- 内置 RSS 自动下载 Free + 小体积种子
+- FlexGet 自动下载 Free + 小体积种子
+- 全部数据限制在 /home/BT 内，25GB 软限制

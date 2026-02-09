@@ -10,7 +10,8 @@
 #    3. 内核参数优化 (sysctl + BBR)
 #    4. 文件描述符 (ulimit)
 #    5. Docker + Docker Compose
-#    6. Swap 保险
+#    6. 创建工作目录 /home/BT
+#    7. Swap 保险
 # ===========================================================
 set -euo pipefail
 
@@ -34,15 +35,19 @@ step()  { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━�
 # 定位脚本所在目录（用于找到 sysctl_optim.conf）
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# 统一工作目录
+BT_HOME="/home/BT"
+
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║   PT 保种服务器 — 环境初始化             ║"
 echo "║   脚本路径: ${SCRIPT_DIR}"
+echo "║   工作目录: ${BT_HOME}"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
 # ==================== STEP 1 ====================
-step "1/6" "系统更新与基础工具安装"
+step "1/7" "系统更新与基础工具安装"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -61,14 +66,14 @@ apt-get install -y -qq "${PACKAGES[@]}" > /dev/null 2>&1
 info "已安装: ${PACKAGES[*]}"
 
 # ==================== STEP 2 ====================
-step "2/6" "设置时区 Asia/Shanghai"
+step "2/7" "设置时区 Asia/Shanghai"
 
 timedatectl set-timezone Asia/Shanghai
 info "当前时区: $(timedatectl show --property=Timezone --value)"
 info "当前时间: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 # ==================== STEP 3 ====================
-step "3/6" "应用内核参数优化 (sysctl + BBR)"
+step "3/7" "应用内核参数优化 (sysctl + BBR)"
 
 SYSCTL_SRC="${SCRIPT_DIR}/sysctl_optim.conf"
 SYSCTL_DST="/etc/sysctl.d/99-pt-optim.conf"
@@ -94,7 +99,7 @@ FILEMAX=$(sysctl -n fs.file-max 2>/dev/null)
 info "fs.file-max = ${FILEMAX}"
 
 # ==================== STEP 4 ====================
-step "4/6" "配置文件描述符限制 (ulimit)"
+step "4/7" "配置文件描述符限制 (ulimit)"
 
 cat > /etc/security/limits.d/99-pt-nofile.conf << 'LIMITS_EOF'
 # PT保种服务器 — 5000+种子需要大量文件描述符
@@ -121,7 +126,7 @@ systemctl daemon-reload
 info "ulimit nofile 已设为 1048576（重新登录后对 shell 生效）"
 
 # ==================== STEP 5 ====================
-step "5/6" "安装 Docker & Docker Compose"
+step "5/7" "安装 Docker & Docker Compose"
 
 if command -v docker &> /dev/null; then
     info "Docker 已存在，跳过安装: $(docker --version)"
@@ -157,7 +162,15 @@ else
 fi
 
 # ==================== STEP 6 ====================
-step "6/6" "创建 Swap 保险 (防 OOM)"
+step "6/7" "创建工作目录 /home/BT"
+
+mkdir -p "${BT_HOME}"
+chown ${SUDO_USER:-1000}:${SUDO_USER:-1000} "${BT_HOME}" 2>/dev/null || true
+chmod 755 "${BT_HOME}"
+info "工作目录已创建: ${BT_HOME} (权限 755)"
+
+# ==================== STEP 7 ====================
+step "7/7" "创建 Swap 保险 (防 OOM)"
 
 SWAP_SIZE="2G"
 if [[ $(swapon --show | wc -l) -gt 0 ]]; then
@@ -188,6 +201,7 @@ printf "║  %-12s %-36s║\n" "Compose:" "$(docker compose version --short 2>/d
 printf "║  %-12s %-36s║\n" "时区:" "$(timedatectl show --property=Timezone --value)"
 printf "║  %-12s %-36s║\n" "Swap:" "$(free -h | awk '/Swap/{print $2}')"
 printf "║  %-12s %-36s║\n" "file-max:" "$(sysctl -n fs.file-max)"
+printf "║  %-12s %-36s║\n" "BT_HOME:" "${BT_HOME}"
 echo "║                                                  ║"
 echo "╠══════════════════════════════════════════════════╣"
 echo "║  ⚠️  建议执行一次重启使所有参数完全生效:         ║"

@@ -1,10 +1,12 @@
 # ===========================================================
 #  PT_JP 日本节点 — Docker Compose 编排
 #  客户端: Transmission 4.0.6 Official (MT白名单合规)
-#  RSS:    FlexGet (替代 qBittorrent 内置 RSS)
+#  RSS:    FlexGet (自动化 RSS 引擎)
+#  策略:   低优先级后台进程，严格资源隔离
 #
+#  宿主机路径: /home/BT/PT_JP/
 #  使用方法:
-#    cd PT_JP
+#    cd /home/BT/PT_JP
 #    cp .env.example .env && vim .env
 #    docker compose up -d
 # ===========================================================
@@ -12,16 +14,19 @@
 services:
   # ============================================
   #  Transmission — 万级种子保种引擎
+  #  资源策略: 低CPU优先级 + 3.5GB内存硬限制
   # ============================================
   transmission:
     image: lscr.io/linuxserver/transmission:${TR_IMAGE_TAG:-4.0.6}
     container_name: transmission_jp
     restart: unless-stopped
 
-    # 8GB内存充裕，不做过严限制，让TR充分利用OS Cache
-    # 仅设软上限防止极端情况
-    mem_limit: 6g
-    memswap_limit: 7g
+    # ===== 资源隔离 (QoS 核心!) =====
+    mem_limit: 3584m
+    memswap_limit: 4096m
+    cpu_shares: 256
+    cpus: 3.0
+    oom_kill_disable: false
 
     ulimits:
       nofile:
@@ -61,7 +66,8 @@ services:
         max-file: "3"
 
   # ============================================
-  #  FlexGet — RSS 自动化引擎 (替代 qB 内置RSS)
+  #  FlexGet — RSS 自动化引擎 + 磁盘守门员
+  #  资源策略: 最低优先级 + 256MB 内存
   # ============================================
   flexget:
     image: ghcr.io/flexget/flexget:3.11
@@ -71,7 +77,10 @@ services:
       transmission:
         condition: service_healthy
 
-    mem_limit: 512m
+    mem_limit: 256m
+    memswap_limit: 384m
+    cpu_shares: 128
+    cpus: 1.0
 
     environment:
       - PUID=${PUID:-1000}
@@ -91,3 +100,7 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+
+networks:
+  default:
+    name: pt_network

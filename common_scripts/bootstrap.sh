@@ -31,7 +31,7 @@ phase() { echo -e "\n${CYAN}═════════════════�
 [[ $EUID -ne 0 ]] && error "请使用 root 用户运行此脚本"
 
 # ===================== 交互式配置 =====================
-DEPLOY_DIR="/home/pt"
+DEPLOY_DIR="/home/BT"
 NODE_NAME="PT_JP"
 REPO_BRANCH="main"
 
@@ -148,7 +148,7 @@ echo "║     sudo reboot                                          ║"
 echo "║                                                          ║"
 echo "║  重启后 SSH 重新登录，执行以下命令完成部署:              ║"
 echo "║                                                          ║"
-echo "║     cd /home/pt/PT_JP                                    ║"
+echo "║     cd /home/BT/PT_JP                                    ║"
 echo "║     sudo bash scripts/deploy.sh                          ║"
 echo "║                                                          ║"
 echo "╚══════════════════════════════════════════════════════════╝"

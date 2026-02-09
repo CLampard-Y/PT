@@ -16,7 +16,7 @@ fail() { echo -e "  ${RED}[✗]${NC} $*"; ERRORS=$((ERRORS+1)); }
 warn() { echo -e "  ${YELLOW}[!]${NC} $*"; }
 
 ERRORS=0
-DEPLOY_DIR="/home/pt"
+DEPLOY_DIR="/home/BT"
 NODE_DIR="${DEPLOY_DIR}/PT_JP"
 
 echo ""

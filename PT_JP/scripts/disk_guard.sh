@@ -12,7 +12,7 @@
 set -uo pipefail
 
 # ===================== 配置 =====================
-DATA_DIR="/home/pt/PT_JP/data"
+DATA_DIR="/home/BT/PT_JP/data"
 FREE_MB_THRESHOLD=2048
 INODE_WARN_PERCENT=75
 LOG_FILE="/var/log/pt-disk-guard.log"

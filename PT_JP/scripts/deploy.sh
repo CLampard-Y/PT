@@ -3,7 +3,7 @@
 #  PT_JP 日本节点 — 容器部署与配置脚本
 #
 #  前置条件: 已运行 bootstrap.sh 完成环境初始化并重启
-#  执行方式: cd /home/pt/PT_JP && sudo bash scripts/deploy.sh
+#  执行方式: cd /home/BT/PT_JP && sudo bash scripts/deploy.sh
 #
 #  本脚本负责:
 #    阶段 D: 启动 Transmission + FlexGet 容器
@@ -30,7 +30,7 @@ phase() { echo -e "\n${CYAN}╔════════════════�
 [[ $EUID -ne 0 ]] && error "请使用 root 用户运行: sudo bash $0"
 
 # ===================== 配置变量 =====================
-DEPLOY_DIR="/home/pt"
+DEPLOY_DIR="/home/BT"
 NODE_NAME="PT_JP"
 
 echo ""
@@ -45,7 +45,7 @@ echo ""
 # ===================== 前置环境检查 =====================
 # 确认 bootstrap.sh 已经运行过
 if ! command -v docker &>/dev/null; then
-    error "Docker 未安装！请先运行 bootstrap.sh:\n  sudo bash /home/pt/common_scripts/bootstrap.sh"
+    error "Docker 未安装！请先运行 bootstrap.sh:\n  sudo bash /home/BT/common_scripts/bootstrap.sh"
 fi
 
 if [[ ! -d "${DEPLOY_DIR}/${NODE_NAME}" ]]; then
@@ -137,9 +137,10 @@ TWC_DIR="./config/transmission/transmission-web-control"
 if [[ ! -d "${TWC_DIR}/src" ]]; then
     info "安装 Transmission Web Control..."
     mkdir -p "${TWC_DIR}"
-    TWC_VER="v1.6.1-update1"
+    TWC_REPO="https://github.com/transmission-web-control/transmission-web-control"
+    TWC_VER="v1.6.1-update2"
     if wget -qO /tmp/twc.tar.gz \
-        "https://github.com/ronggang/transmission-web-control/archive/refs/tags/${TWC_VER}.tar.gz" 2>/dev/null; then
+        "${TWC_REPO}/archive/refs/tags/${TWC_VER}.tar.gz" 2>/dev/null; then
         tar -xzf /tmp/twc.tar.gz -C /tmp/
         cp -r /tmp/transmission-web-control-*/src "${TWC_DIR}/"
         rm -rf /tmp/twc.tar.gz /tmp/transmission-web-control-*
@@ -163,27 +164,38 @@ if [[ -f "${TR_CONF_BACKUP}" ]]; then
     cp "${TR_CONF_BACKUP}" "${TR_CONF}"
     rm -f "${TR_CONF_BACKUP}"
 
-    # 将 .env 中的密码写入 settings.json
+    # 将 .env 中的密码写入 settings.json (使用 jq，防止特殊字符破坏JSON)
     TR_PASS_VAL=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo 'changeme')
     TR_USER_VAL=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
-    python3 -c "
-import json
-with open('${TR_CONF}', 'r') as f:
+    if command -v jq &>/dev/null; then
+        jq --arg user "${TR_USER_VAL}" --arg pass "${TR_PASS_VAL}" \
+            '."rpc-username" = $user | ."rpc-password" = $pass' \
+            "${TR_CONF}" > "${TR_CONF}.tmp" && mv "${TR_CONF}.tmp" "${TR_CONF}"
+        info "RPC 认证已通过 jq 写入 settings.json"
+    else
+        warn "jq 未安装，尝试 python3 回退..."
+        python3 - "${TR_USER_VAL}" "${TR_PASS_VAL}" << 'PYEOF' 2>/dev/null && \
+            info "RPC 认证已通过 python3 写入" || \
+            warn "自动写入失败，请手动编辑 ${TR_CONF}"
+import json, sys, glob
+conf = glob.glob('./config/transmission/settings.json')[0]
+with open(conf, 'r') as f:
     cfg = json.load(f)
-cfg['rpc-username'] = '${TR_USER_VAL}'
-cfg['rpc-password'] = '${TR_PASS_VAL}'
-with open('${TR_CONF}', 'w') as f:
+cfg['rpc-username'] = sys.argv[1]
+cfg['rpc-password'] = sys.argv[2]
+with open(conf, 'w') as f:
     json.dump(cfg, f, indent=4)
-" 2>/dev/null && info "RPC 认证已写入 settings.json" || \
-        warn "自动写入失败，请手动编辑 ${TR_CONF}"
+PYEOF
+    fi
 
     docker compose up -d transmission
     sleep 10
 
     # 验证关键参数
-    grep -q '"cache-size-mb": 2048' "${TR_CONF}" 2>/dev/null && info "磁盘缓存 2048MB ✓"
-    grep -q '"peer-limit-global": 2000' "${TR_CONF}" 2>/dev/null && info "全局连接数 2000 ✓"
+    grep -q '"cache-size-mb": 1024' "${TR_CONF}" 2>/dev/null && info "磁盘缓存 1024MB ✓"
+    grep -q '"peer-limit-global": 1600' "${TR_CONF}" 2>/dev/null && info "全局连接数 1600 ✓"
     grep -q '"seed-queue-enabled": false' "${TR_CONF}" 2>/dev/null && info "做种无限制 ✓"
+    grep -q '"preallocation": 2' "${TR_CONF}" 2>/dev/null && info "完全预分配 (Mode 2) ✓"
 
     info "Transmission 配置覆盖完成 ✓"
 else
@@ -223,7 +235,8 @@ if docker ps --format '{{.Names}}' | grep -q 'flexget_jp'; then
     info "FlexGet 容器运行正常 ✓"
     # 测试执行一次
     info "测试 FlexGet RSS 抓取 (dry-run)..."
-    docker exec flexget_jp flexget --test execute --tasks mt_free_seed 2>&1 | tail -5 || true
+    docker exec flexget_jp sh -c 'flexget --test execute --tasks mt_free_seed 2>&1 | tail -10' || \
+        warn "dry-run 执行失败（首次运行可能需要等待数据库初始化）"
 else
     warn "FlexGet 启动失败，请检查: docker logs flexget_jp"
 fi
@@ -278,9 +291,9 @@ echo "║    TR资源:    docker stats transmission_jp --no-stream║"
 echo "║    TR日志:    docker logs transmission_jp --tail 50   ║"
 echo "║    FG日志:    docker logs flexget_jp --tail 50        ║"
 echo "║    FG手动执行: docker exec flexget_jp flexget execute ║"
-echo "║    磁盘监控:  df -h /home/pt/PT_JP/data               ║"
-echo "║    拉取更新:  cd /home/pt && git pull origin main     ║"
-echo "║    重启全部:  cd /home/pt/PT_JP && docker compose restart ║"
+echo "║    磁盘监控:  df -h /home/BT/PT_JP/data               ║"
+echo "║    拉取更新:  cd /home/BT && git pull origin main     ║"
+echo "║    重启全部:  cd /home/BT/PT_JP && docker compose restart ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
