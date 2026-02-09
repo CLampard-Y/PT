@@ -1,14 +1,21 @@
 # ===========================================================
-#  PT_JP 日本节点 — Docker Compose 编排
+#  PT_JP 日本节点 — Docker Compose 编排 (生产级)
 #  客户端: Transmission 4.0.6 Official (MT白名单合规)
 #  RSS:    FlexGet (自动化 RSS 引擎)
 #  策略:   低优先级后台进程，严格资源隔离
 #
+#  生产级特性:
+#    - PUID/PGID: 容器以非 root 用户运行 (由 deploy.sh 自动注入)
+#    - Log Rotation: 防止日志撑爆磁盘
+#    - Timezone: 宿主机时区映射 + TZ 环境变量
+#    - Network: Bridge 模式 (安全隔离 + 多节点兼容)
+#    - Healthcheck: 自动检测服务健康状态
+#
 #  宿主机路径: /home/BT/PT_JP/
 #  使用方法:
 #    cd /home/BT/PT_JP
-#    cp .env.example .env && vim .env
-#    docker compose up -d
+#    sudo bash scripts/deploy.sh   # 推荐 (自动处理 .env)
+#    docker compose up -d           # 手动 (需先配置 .env)
 # ===========================================================
 
 services:
@@ -51,6 +58,7 @@ services:
       - ./config/transmission:/config
       - ./data:/downloads
       - ./watch:/watch
+      - /etc/localtime:/etc/localtime:ro
 
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9091/transmission/web/"]
@@ -73,6 +81,7 @@ services:
     image: ghcr.io/flexget/flexget:3.11
     container_name: flexget_jp
     restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       transmission:
         condition: service_healthy
@@ -94,6 +103,7 @@ services:
     volumes:
       - ./config/flexget:/config
       - ./data:/downloads
+      - /etc/localtime:/etc/localtime:ro
 
     logging:
       driver: json-file
@@ -104,3 +114,4 @@ services:
 networks:
   default:
     name: pt_network
+    driver: bridge

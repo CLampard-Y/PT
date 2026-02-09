@@ -80,10 +80,13 @@ if [[ ${GIT_MAJOR} -lt 2 ]] || [[ ${GIT_MAJOR} -eq 2 && ${GIT_MINOR} -lt 25 ]]; 
     error "Git 版本过低，Sparse Checkout 需要 >= 2.25"
 fi
 
-# 备份旧 .env (如果存在)
-[[ -f "${DEPLOY_DIR}/${NODE_NAME}/.env" ]] && \
-    cp "${DEPLOY_DIR}/${NODE_NAME}/.env" "/tmp/pt_env_backup_$(date +%s)" && \
-    warn "已备份旧 .env 到 /tmp/"
+# 备份旧 .env (如果存在) — 备份到 /home/BT 内部
+ENV_BACKUP_DIR="${DEPLOY_DIR}/.backups"
+if [[ -f "${DEPLOY_DIR}/${NODE_NAME}/.env" ]]; then
+    mkdir -p "${ENV_BACKUP_DIR}"
+    cp "${DEPLOY_DIR}/${NODE_NAME}/.env" "${ENV_BACKUP_DIR}/env_backup_$(date +%s)"
+    warn "已备份旧 .env 到 ${ENV_BACKUP_DIR}/"
+fi
 
 # 清理并重新初始化
 rm -rf "${DEPLOY_DIR}"

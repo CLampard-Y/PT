@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # ===========================================================
-#  PT_JP 日本节点 — 容器部署与配置脚本
+#  PT_JP 日本节点 — 容器部署与配置脚本 (生产级重构版)
 #
 #  前置条件:
-#    1. 已通过 Server-Ops 完成系统初始化 (Docker/BBR/SSH)
-#    2. 已通过 bootstrap.sh 拉取 PT 业务代码
+#    1. Server-Ops 已完成系统初始化 (Docker/BBR/SSH)
+#    2. bootstrap.sh 已拉取 PT 业务代码
 #  执行方式: cd /home/BT/PT_JP && sudo bash scripts/deploy.sh
 #
-#  本脚本负责 (纯业务逻辑):
-#    阶段 D: 启动 Transmission + FlexGet 容器
-#    阶段 E: 安装 Transmission Web Control + 覆盖配置
-#    阶段 F: 配置 FlexGet RSS 变量
-#    阶段 G: 注册监控任务
+#  设计原则:
+#    - 幂等性: 可重复运行，不破坏已有配置
+#    - 权限安全: 自动检测 PUID/PGID，容器不以 root 运行
+#    - 健壮性: 每步操作都有验证和回退
+#
+#  本脚本负责:
+#    阶段 A: 环境预检 + 权限检测 (调用 init_env.sh)
+#    阶段 B: 幂等生成 .env 配置
+#    阶段 C: 启动 Transmission + 配置覆盖
+#    阶段 D: 配置 FlexGet RSS + 启动
+#    阶段 E: 注册监控任务 + 最终验证
 # ===========================================================
 set -euo pipefail
 
@@ -34,74 +40,141 @@ phase() { echo -e "\n${CYAN}╔════════════════�
 # ===================== 配置变量 =====================
 DEPLOY_DIR="/home/BT"
 NODE_NAME="PT_JP"
+NODE_DIR="${DEPLOY_DIR}/${NODE_NAME}"
 
 echo ""
 echo "╔══════════════════════════════════════════════════╗"
 echo "║       PT_JP 日本节点 — 容器部署                  ║"
 echo "╠══════════════════════════════════════════════════╣"
-echo "║  目录:   ${DEPLOY_DIR}/${NODE_NAME}"
+echo "║  目录:   ${NODE_DIR}"
 echo "║  客户端: Transmission 4.0.6 + FlexGet RSS"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 
-# ===================== 前置环境检查 =====================
-# 确认 Server-Ops 已完成系统初始化
-if ! command -v docker &>/dev/null; then
-    error "Docker 未安装！请先运行 Server-Ops 初始化:\n  git clone <REPO> /home/Server-Ops && sudo bash /home/Server-Ops/setup.sh"
+# =============================================================
+#  阶段 A: 环境预检 + 权限检测
+# =============================================================
+phase "A" "环境预检 + 权限检测"
+
+# 调用 init_env.sh 进行预检 (Docker/权限/目录)
+INIT_SCRIPT="${DEPLOY_DIR}/common_scripts/init_env.sh"
+if [[ -f "${INIT_SCRIPT}" ]]; then
+    source "${INIT_SCRIPT}"
+else
+    # 回退: 手动做最小检查
+    warn "未找到 ${INIT_SCRIPT}，执行最小预检"
+    command -v docker &>/dev/null || error "Docker 未安装！"
+    docker compose version &>/dev/null || error "Docker Compose 未安装！"
+    export PUID=${PUID:-1000}
+    export PGID=${PGID:-1000}
+    export TZ=${TZ:-Asia/Shanghai}
 fi
 
-if [[ ! -d "${DEPLOY_DIR}/${NODE_NAME}" ]]; then
-    error "${DEPLOY_DIR}/${NODE_NAME} 不存在！请先运行 bootstrap.sh"
+if [[ ! -d "${NODE_DIR}" ]]; then
+    error "${NODE_DIR} 不存在！请先运行 bootstrap.sh"
 fi
 
-info "前置检查通过: Docker $(docker --version | grep -oP '\d+\.\d+\.\d+')"
-
-# 清理旧的 qBittorrent 容器 (如果存在)
-if docker ps -a --format '{{.Names}}' | grep -q 'qbittorrent_jp'; then
-    warn "检测到旧的 qBittorrent 容器，正在清理..."
-    docker rm -f qbittorrent_jp 2>/dev/null || true
-    info "旧容器已清理"
-fi
+info "前置检查通过: Docker $(docker --version | grep -oP '\d+\.\d+\.\d+'), PUID=${PUID}"
 
 # =============================================================
-#  阶段 D: 启动 Transmission + FlexGet 容器
+#  阶段 B: 幂等生成 .env 配置
 # =============================================================
-phase "D" "启动 Transmission + FlexGet 容器"
+phase "B" "幂等生成 .env 配置"
 
-cd "${DEPLOY_DIR}/${NODE_NAME}"
+cd "${NODE_DIR}"
 
-# 创建目录结构
-mkdir -p ./data/complete ./data/incomplete ./watch
-mkdir -p ./config/transmission ./config/flexget
-info "目录结构已创建"
+# ── 幂等 .env 生成逻辑 ──
+# 原则: 已有的用户密钥 (TR_PASS, MT_RSS_URL) 绝不覆盖
+#       仅补充缺失变量 + 更新系统变量 (PUID/PGID/TZ)
 
-# 创建 .env 文件
+ensure_env_var() {
+    # 用法: ensure_env_var "KEY" "DEFAULT_VALUE" "注释"
+    local key="$1" val="$2" comment="${3:-}"
+    if [[ -f .env ]] && grep -q "^${key}=" .env; then
+        return 0  # 已存在，不覆盖
+    fi
+    # 写入注释 (去重: 避免重复运行追加相同注释)
+    if [[ -n "${comment}" ]]; then
+        grep -qF "# ${comment}" .env 2>/dev/null || echo "# ${comment}" >> .env
+    fi
+    echo "${key}=${val}" >> .env
+}
+
+update_env_var() {
+    # 用法: update_env_var "KEY" "VALUE" — 强制更新 (用于系统变量)
+    local key="$1" val="$2"
+    if [[ -f .env ]] && grep -q "^${key}=" .env; then
+        sed -i "s|^${key}=.*|${key}=${val}|" .env
+    else
+        echo "${key}=${val}" >> .env
+    fi
+}
+
 if [[ ! -f .env ]]; then
+    # 首次部署: 从模板创建
     if [[ -f .env.example ]]; then
         cp .env.example .env
-        warn ".env 已从模板创建，请务必编辑!"
-        warn "必须修改: TR_PASS, MT_RSS_URL (passkey)"
-        echo ""
-        read -rp "是否现在编辑 .env？(Y/n): " EDIT_ENV
-        if [[ "${EDIT_ENV}" != "n" && "${EDIT_ENV}" != "N" ]]; then
-            vim .env || nano .env || vi .env
-        fi
+        info ".env 已从模板创建"
     else
-        error "找不到 .env.example 模板文件"
+        touch .env
+        warn ".env.example 不存在，创建空 .env"
     fi
+    ENV_IS_NEW=true
 else
-    info ".env 文件已存在，跳过创建"
+    info ".env 已存在，执行幂等更新"
+    ENV_IS_NEW=false
 fi
+
+# 强制更新系统变量 (每次部署都刷新)
+update_env_var "PUID" "${PUID}"
+update_env_var "PGID" "${PGID}"
+update_env_var "TZ" "${TZ}"
+info "系统变量已更新: PUID=${PUID} PGID=${PGID} TZ=${TZ}"
+
+# 补充缺失的业务变量 (不覆盖已有值)
+ensure_env_var "TR_USER" "admin" "Transmission RPC 用户名"
+ensure_env_var "TR_PASS" "CHANGE_ME_TO_STRONG_PASSWORD" "Transmission RPC 密码 (必须修改!)"
+ensure_env_var "TR_WEBUI_PORT" "9091" "Transmission WebUI 端口"
+ensure_env_var "TR_PEER_PORT" "51413" "Transmission Peer 端口"
+ensure_env_var "TR_IMAGE_TAG" "4.0.6" "Transmission 镜像版本"
+ensure_env_var "MT_RSS_URL" "https://YOUR_TRACKER/rss?passkey=YOUR_PASSKEY_HERE" "MT RSS 地址 (必须修改!)"
+ensure_env_var "FG_WEBUI_PASS" "flexget" "FlexGet WebUI 密码"
+
+# 首次创建时提示编辑
+if [[ "${ENV_IS_NEW}" == "true" ]]; then
+    warn "╔══════════════════════════════════════════════╗"
+    warn "║  ⚠️  首次部署，请务必编辑 .env 文件!         ║"
+    warn "║  必须修改: TR_PASS, MT_RSS_URL (passkey)     ║"
+    warn "╚══════════════════════════════════════════════╝"
+    echo ""
+    read -rp "是否现在编辑 .env？(Y/n): " EDIT_ENV
+    if [[ "${EDIT_ENV}" != "n" && "${EDIT_ENV}" != "N" ]]; then
+        vim .env || nano .env || vi .env
+    fi
+fi
+
+# 安全检查: 关键变量不能是默认值
+TR_PASS_CHECK=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo '')
+if [[ "${TR_PASS_CHECK}" == "CHANGE_ME_TO_STRONG_PASSWORD" || -z "${TR_PASS_CHECK}" ]]; then
+    warn "TR_PASS 仍为默认值！强烈建议修改: vim .env"
+fi
+
+info ".env 配置就绪"
+
+# =============================================================
+#  阶段 C: 启动 Transmission + 配置覆盖
+# =============================================================
+phase "C" "启动 Transmission + 配置覆盖"
 
 # 备份仓库预置的 settings.json (容器首次启动会覆盖)
 TR_CONF_REPO="./config/transmission/settings.json"
-TR_CONF_BACKUP="/tmp/settings.json.repo_preset"
+TR_CONF_BACKUP="${NODE_DIR}/.settings.json.repo_preset"
 if [[ -f "${TR_CONF_REPO}" ]]; then
     cp "${TR_CONF_REPO}" "${TR_CONF_BACKUP}"
     info "已备份仓库预置 settings.json"
 fi
 
-# 启动 Transmission (先不启动 FlexGet，等配置完成)
+# 启动 Transmission
 info "启动 Transmission 容器..."
 docker compose up -d transmission
 
@@ -130,9 +203,9 @@ else
 fi
 
 # =============================================================
-#  阶段 E: 安装 TWC + 覆盖 Transmission 配置
+#  阶段 C (续): 安装 TWC + 覆盖 Transmission 配置
 # =============================================================
-phase "E" "安装 Transmission Web Control + 覆盖配置"
+phase "C+" "安装 Transmission Web Control + 覆盖配置"
 
 # ---- 安装 Transmission Web Control (第三方WebUI) ----
 TWC_DIR="./config/transmission/transmission-web-control"
@@ -141,11 +214,13 @@ if [[ ! -d "${TWC_DIR}/src" ]]; then
     mkdir -p "${TWC_DIR}"
     TWC_REPO="https://github.com/transmission-web-control/transmission-web-control"
     TWC_VER="v1.6.1-update2"
-    if wget -qO /tmp/twc.tar.gz \
+    TWC_TMP="${NODE_DIR}/.twc_tmp"
+    mkdir -p "${TWC_TMP}"
+    if wget -qO "${TWC_TMP}/twc.tar.gz" \
         "${TWC_REPO}/archive/refs/tags/${TWC_VER}.tar.gz" 2>/dev/null; then
-        tar -xzf /tmp/twc.tar.gz -C /tmp/
-        cp -r /tmp/transmission-web-control-*/src "${TWC_DIR}/"
-        rm -rf /tmp/twc.tar.gz /tmp/transmission-web-control-*
+        tar -xzf "${TWC_TMP}/twc.tar.gz" -C "${TWC_TMP}/"
+        cp -r "${TWC_TMP}"/transmission-web-control-*/src "${TWC_DIR}/"
+        rm -rf "${TWC_TMP}"
         info "TWC 安装完成 ✓"
     else
         warn "TWC 下载失败，将使用原版 WebUI"
@@ -205,9 +280,9 @@ else
 fi
 
 # =============================================================
-#  阶段 F: 配置 FlexGet RSS 变量 + 启动
+#  阶段 D: 配置 FlexGet RSS 变量 + 启动
 # =============================================================
-phase "F" "配置 FlexGet RSS"
+phase "D" "配置 FlexGet RSS"
 
 # 从 .env 读取变量写入 FlexGet variables.yml
 FG_VARS="./config/flexget/variables.yml"
@@ -217,6 +292,8 @@ TR_PASS_FG=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo 'changeme')
 
 if [[ -n "${MT_RSS}" && "${MT_RSS}" != *"YOUR_PASSKEY_HERE"* ]]; then
     cat > "${FG_VARS}" << FGEOF
+tr_host: transmission
+tr_port: 9091
 tr_user: ${TR_USER_FG}
 tr_pass: ${TR_PASS_FG}
 mt_rss_url: ${MT_RSS}
@@ -251,9 +328,9 @@ echo "  - 无需手动配置 RSS 规则 ✓"
 echo ""
 
 # =============================================================
-#  阶段 G: 注册监控任务 + 最终验证
+#  阶段 E: 注册监控任务 + 健康检查 + 最终验证
 # =============================================================
-phase "G" "注册监控任务 & 最终验证"
+phase "E" "注册监控任务 & 最终验证"
 
 # 注册 crontab
 SETUP_CRON="${DEPLOY_DIR}/${NODE_NAME}/scripts/setup_cron.sh"
@@ -273,6 +350,32 @@ if [[ -f "${DISK_GUARD}" ]]; then
     info "磁盘守护脚本首次执行完成"
 fi
 
+# ── 健康检查 ──
+info "执行健康检查..."
+
+# Transmission WebUI
+if command -v curl &>/dev/null; then
+    TR_PORT=$(grep -oP '^TR_WEBUI_PORT=\K.*' .env 2>/dev/null || echo '9091')
+    HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://localhost:${TR_PORT}/transmission/web/" 2>/dev/null || echo '000')
+    if [[ "${HTTP_CODE}" == "200" || "${HTTP_CODE}" == "401" ]]; then
+        info "Transmission WebUI: HTTP ${HTTP_CODE} ✓"
+    else
+        warn "Transmission WebUI: HTTP ${HTTP_CODE} (可能仍在启动中)"
+    fi
+else
+    warn "curl 不可用，跳过 HTTP 健康检查"
+fi
+
+# Docker 容器状态
+for cname in transmission_jp flexget_jp; do
+    local_status=$(docker inspect -f '{{.State.Status}}' "${cname}" 2>/dev/null || echo 'not_found')
+    if [[ "${local_status}" == "running" ]]; then
+        info "${cname}: ${local_status} ✓"
+    else
+        warn "${cname}: ${local_status}"
+    fi
+done
+
 # ==================== 部署完成报告 ====================
 echo ""
 echo "╔══════════════════════════════════════════════════════╗"
@@ -284,7 +387,8 @@ printf "║  %-14s %-38s║\n" "Docker:" "$(docker --version 2>/dev/null | grep 
 printf "║  %-14s %-38s║\n" "TR状态:" "$(docker inspect -f '{{.State.Status}}' transmission_jp 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "FG状态:" "$(docker inspect -f '{{.State.Status}}' flexget_jp 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "磁盘使用:" "$(df -h ${DEPLOY_DIR}/${NODE_NAME}/data 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}')"
-printf "║  %-14s %-38s║\n" "Sparse:" "$(cd ${DEPLOY_DIR} && git sparse-checkout list 2>/dev/null | tr '\n' ', ')"
+printf "║  %-14s %-38s║\n" "PUID/PGID:" "${PUID}/${PGID}"
+printf "║  %-14s %-38s║\n" "TZ:" "${TZ}"
 echo "║                                                      ║"
 echo "╠══════════════════════════════════════════════════════╣"
 echo "║  📌 日常运维命令:                                    ║"
@@ -296,6 +400,9 @@ echo "║    FG手动执行: docker exec flexget_jp flexget execute ║"
 echo "║    磁盘监控:  df -h /home/BT/PT_JP/data               ║"
 echo "║    拉取更新:  cd /home/BT && git pull origin main      ║"
 echo "║    重启全部:  cd /home/BT/PT_JP && docker compose restart ║"
+echo "║                                                      ║"
+echo "║  🗑️  完整卸载 (零残留):                              ║"
+echo "║    cd /home/BT/PT_JP && sudo bash scripts/uninstall.sh║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 

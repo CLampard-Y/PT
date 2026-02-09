@@ -13,9 +13,14 @@ set -uo pipefail
 
 # ===================== 配置 =====================
 DATA_DIR="/home/BT/PT_JP/data"
+LOG_DIR="/home/BT/PT_JP/logs"
 FREE_MB_THRESHOLD=2048
 INODE_WARN_PERCENT=75
-LOG_FILE="/var/log/pt-disk-guard.log"
+
+# 日志和标记文件全部封闭在 /home/BT 内 (零泄漏策略)
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/disk-guard.log"
+PAUSE_FLAG="${LOG_DIR}/.disk_guard_paused"
 
 # 从 .env 文件读取 Transmission 认证信息
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,16 +87,16 @@ if [[ -n "${FREE_MB}" ]] && [[ ${FREE_MB} -le ${FREE_MB_THRESHOLD} ]]; then
 # ---- 空间恢复: 剩余 > 5GB 时自动恢复 ----
 elif [[ -n "${FREE_MB}" ]] && [[ ${FREE_MB} -gt 5120 ]]; then
     # 检查是否存在暂停标记文件
-    if [[ -f "/tmp/.pt_disk_guard_paused" ]]; then
+    if [[ -f "${PAUSE_FLAG}" ]]; then
         log "✅ 磁盘空间已恢复 (${FREE_MB}MB)，恢复所有任务"
         tr_start_all
-        rm -f "/tmp/.pt_disk_guard_paused"
+        rm -f "${PAUSE_FLAG}"
     fi
 fi
 
 # 写入暂停标记 (用于恢复判断)
 if [[ -n "${FREE_MB}" ]] && [[ ${FREE_MB} -le ${FREE_MB_THRESHOLD} ]]; then
-    touch "/tmp/.pt_disk_guard_paused"
+    touch "${PAUSE_FLAG}"
 fi
 
 # ---- Inode 保护 ----
