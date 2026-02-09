@@ -1,0 +1,28 @@
+# ===== PT Monorepo .gitignore =====
+
+# 运行时下载数据（绝对不能入库）
+*/data/
+*/downloads/
+
+# 真实环境变量（含密码/passkey）
+**/.env
+
+# 客户端运行时生成的文件
+*/config/qBittorrent/BT_backup/
+*/config/qBittorrent/lockfile
+*/config/qBittorrent/ipc-socket
+*/config/qBittorrent/logs/
+
+# watch 目录中的种子文件
+*/watch/*.torrent
+
+# 日志
+*.log
+*/logs/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
