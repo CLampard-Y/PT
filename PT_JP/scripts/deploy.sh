@@ -174,12 +174,35 @@ if [[ -f "${TR_CONF_REPO}" ]]; then
     info "已备份仓库预置 settings.json"
 fi
 
-# 启动 Transmission
+# 启动 Transmission (不启动 FlexGet，避免依赖等待)
 info "启动 Transmission 容器..."
-docker compose up -d transmission
+docker compose up -d --no-deps transmission
 
-info "等待 Transmission 初始化 (15秒)..."
-sleep 15
+info "等待 Transmission 初始化并通过健康检查..."
+# 等待最多 120 秒让 Transmission 变为 healthy
+WAIT_COUNT=0
+MAX_WAIT=120
+while [[ $WAIT_COUNT -lt $MAX_WAIT ]]; do
+    HEALTH_STATUS=$(docker inspect transmission_jp --format='{{.State.Health.Status}}' 2>/dev/null || echo "none")
+    if [[ "${HEALTH_STATUS}" == "healthy" ]]; then
+        info "Transmission 健康检查通过 ✓"
+        break
+    elif [[ "${HEALTH_STATUS}" == "none" ]]; then
+        # 容器没有健康检查或还未开始
+        if docker ps --format '{{.Names}}' | grep -q 'transmission_jp'; then
+            info "Transmission 运行中 (无健康检查或启动中)，继续等待..."
+        fi
+    fi
+    sleep 5
+    WAIT_COUNT=$((WAIT_COUNT + 5))
+    echo -n "."
+done
+echo ""
+
+if [[ $WAIT_COUNT -ge $MAX_WAIT ]]; then
+    warn "Transmission 健康检查超时，但容器可能仍在运行"
+    warn "请检查: docker logs transmission_jp"
+fi
 
 # 读取 .env 中的认证信息用于显示
 TR_USER_DISPLAY=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
@@ -203,31 +226,13 @@ else
 fi
 
 # =============================================================
-#  阶段 C (续): 安装 TWC + 覆盖 Transmission 配置
+#  阶段 C (续): 覆盖 Transmission 配置
 # =============================================================
-phase "C+" "安装 Transmission Web Control + 覆盖配置"
+phase "C+" "覆盖 Transmission 配置"
 
-# ---- 安装 Transmission Web Control (第三方WebUI) ----
-TWC_DIR="./config/transmission/transmission-web-control"
-if [[ ! -d "${TWC_DIR}/src" ]]; then
-    info "安装 Transmission Web Control..."
-    mkdir -p "${TWC_DIR}"
-    TWC_REPO="https://github.com/transmission-web-control/transmission-web-control"
-    TWC_VER="v1.6.1-update2"
-    TWC_TMP="${NODE_DIR}/.twc_tmp"
-    mkdir -p "${TWC_TMP}"
-    if wget -qO "${TWC_TMP}/twc.tar.gz" \
-        "${TWC_REPO}/archive/refs/tags/${TWC_VER}.tar.gz" 2>/dev/null; then
-        tar -xzf "${TWC_TMP}/twc.tar.gz" -C "${TWC_TMP}/"
-        cp -r "${TWC_TMP}"/transmission-web-control-*/src "${TWC_DIR}/"
-        rm -rf "${TWC_TMP}"
-        info "TWC 安装完成 ✓"
-    else
-        warn "TWC 下载失败，将使用原版 WebUI"
-    fi
-else
-    info "TWC 已存在，跳过安装"
-fi
+# 注意: Web UI 已改用独立容器 tr-web (jianxcao/transmission-web)
+# 无需手动安装 TWC，容器会自动提供现代化管理界面
+info "Web UI 使用独立容器 tr-web，访问端口: ${TR_WEB_PORT:-7632}"
 
 # ---- 覆盖 settings.json ----
 TR_CONF="./config/transmission/settings.json"
@@ -292,10 +297,12 @@ TR_PASS_FG=$(grep -oP '^TR_PASS=\K.*' .env 2>/dev/null || echo 'changeme')
 
 if [[ -n "${MT_RSS}" && "${MT_RSS}" != *"YOUR_PASSKEY_HERE"* ]]; then
     cat > "${FG_VARS}" << FGEOF
-tr_host: transmission
-tr_port: 9091
+# FlexGet 变量文件 (由 deploy.sh 自动生成)
+# Transmission RPC 认证
 tr_user: ${TR_USER_FG}
 tr_pass: ${TR_PASS_FG}
+
+# MT站 RSS 地址
 mt_rss_url: ${MT_RSS}
 FGEOF
     info "FlexGet variables.yml 已生成"
@@ -322,9 +329,23 @@ fi
 
 echo ""
 echo "  FlexGet 自动化说明:"
-echo "  - 每15分钟自动抓取 MT Free 种子 (< 100MB)"
+echo "  - 每30分钟自动抓取 MT Free 种子 (< 12MB)"
 echo "  - 自动推送到 Transmission 下载"
 echo "  - 无需手动配置 RSS 规则 ✓"
+echo ""
+
+# 启动 Transmission Web UI
+info "启动 Transmission Web UI 容器..."
+docker compose up -d tr-web
+sleep 5
+
+if docker ps --format '{{.Names}}' | grep -q 'tr-web_jp'; then
+    info "Transmission Web UI 容器运行正常 ✓"
+    info "访问地址: http://服务器IP:${TR_WEB_PORT:-7632}"
+else
+    warn "Transmission Web UI 启动失败，请检查: docker logs tr-web_jp"
+fi
+
 echo ""
 
 # =============================================================
@@ -386,9 +407,15 @@ printf "║  %-14s %-38s║\n" "BBR:" "$(sysctl -n net.ipv4.tcp_congestion_contr
 printf "║  %-14s %-38s║\n" "Docker:" "$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+')"
 printf "║  %-14s %-38s║\n" "TR状态:" "$(docker inspect -f '{{.State.Status}}' transmission_jp 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "FG状态:" "$(docker inspect -f '{{.State.Status}}' flexget_jp 2>/dev/null)"
+printf "║  %-14s %-38s║\n" "WebUI状态:" "$(docker inspect -f '{{.State.Status}}' tr-web_jp 2>/dev/null)"
 printf "║  %-14s %-38s║\n" "磁盘使用:" "$(df -h ${DEPLOY_DIR}/${NODE_NAME}/data 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}')"
 printf "║  %-14s %-38s║\n" "PUID/PGID:" "${PUID}/${PGID}"
 printf "║  %-14s %-38s║\n" "TZ:" "${TZ}"
+echo "║                                                      ║"
+echo "╠══════════════════════════════════════════════════════╣"
+echo "║  🌐 Web 访问地址:                                    ║"
+echo "║    Transmission Web UI: http://服务器IP:${TR_WEB_PORT:-7632}    ║"
+echo "║    FlexGet Web UI:      http://服务器IP:5050         ║"
 echo "║                                                      ║"
 echo "╠══════════════════════════════════════════════════════╣"
 echo "║  📌 日常运维命令:                                    ║"
@@ -396,6 +423,7 @@ echo "║    容器状态:  docker ps                              ║"
 echo "║    TR资源:    docker stats transmission_jp --no-stream║"
 echo "║    TR日志:    docker logs transmission_jp --tail 50   ║"
 echo "║    FG日志:    docker logs flexget_jp --tail 50        ║"
+echo "║    WebUI日志: docker logs tr-web_jp --tail 50        ║"
 echo "║    FG手动执行: docker exec flexget_jp flexget execute ║"
 echo "║    磁盘监控:  df -h /home/BT/PT_JP/data               ║"
 echo "║    拉取更新:  cd /home/BT && git pull origin main      ║"

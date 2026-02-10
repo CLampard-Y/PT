@@ -47,7 +47,6 @@ services:
       - USER=${TR_USER:-admin}
       - PASS=${TR_PASS:-changeme}
       - PEERPORT=${TR_PEER_PORT:-51413}
-      - TRANSMISSION_WEB_HOME=/config/transmission-web-control/src
 
     ports:
       - "${TR_WEBUI_PORT:-9091}:9091"
@@ -61,11 +60,11 @@ services:
       - /etc/localtime:/etc/localtime:ro
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:9091/transmission/web/"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+      test: ["CMD-SHELL", "pgrep -x transmission-da > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
     logging:
       driver: json-file
@@ -82,6 +81,7 @@ services:
     container_name: flexget_jp
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
+    command: daemon start --autoreload-config
     depends_on:
       transmission:
         condition: service_healthy
@@ -104,6 +104,38 @@ services:
       - ./config/flexget:/config
       - ./data:/downloads
       - /etc/localtime:/etc/localtime:ro
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ============================================
+  #  Transmission Web UI — 现代化管理面板
+  #  独立容器，替代 TWC 手动安装
+  #  访问地址: http://服务器IP:7632
+  # ============================================
+  tr-web:
+    image: jianxcao/transmission-web
+    container_name: tr-web_jp
+    restart: unless-stopped
+    depends_on:
+      transmission:
+        condition: service_healthy
+
+    environment:
+      - BACKEND_URL=http://transmission:9091/transmission/rpc
+      - BACKEND_USERNAME=${TR_USER:-admin}
+      - BACKEND_PASSWORD=${TR_PASS:-changeme}
+
+    ports:
+      - "${TR_WEB_PORT:-7632}:7632"
+
+    mem_limit: 128m
+    memswap_limit: 192m
+    cpu_shares: 64
+    cpus: 0.5
 
     logging:
       driver: json-file

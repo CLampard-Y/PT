@@ -1,17 +1,66 @@
+# ===========================================================
+#  FlexGet 配置文件 - 生产级加固版
+#  功能: RSS 自动抓取 + 速率限制 + 数据清洗
+# ===========================================================
+
+# 1. 全局调度配置（控制 API 请求频率）
 schedules:
   - tasks: ['mt_free_seed']
     interval:
-      minutes: 15
+      minutes: 30  # 每30分钟运行一次（全天48次请求 << 1000次限制）
   - tasks: ['clean_transmission']
     interval:
       hours: 1
 
 tasks:
   mt_free_seed:
+    # ===== RSS 源配置 =====
     rss:
       url: '{? mt_rss_url ?}'
       all_entries: no
 
+    # ===== 速率限制 (解决 503 Service Unavailable) =====
+    # 强制在同一域名的请求之间等待 5 秒，避免触发 Tracker 速率限制
+    domain_delay:
+      # 格式: '数字 单位' (单位可以是 seconds/minutes/hours/days/weeks)
+      # 1. 主域名系列
+      m-team.cc: '5 seconds'  # 自动覆盖所有子域名
+      m-team.io: '5 seconds'  # 备用域名
+
+      # 2. 具体子域名
+      rss.m-team.cc: '5 seconds'  # RSS API 域名（你的链接）
+      kp.m-team.cc: '5 seconds'   # Tracker 域名
+      api.m-team.cc: '5 seconds'  # API 域名
+
+      # 3. 下载服务器
+      halomt.com: '5 seconds'  # 下载链接域名
+      manfuz.co: '5 seconds'   # 备用下载节点
+
+    # ===== 数据清洗 (解决 ValueError: Header values may not contain linefeed) =====
+    # 仅清理确实存在的字段，避免 "field is not present" 警告
+    # 策略：保守清理，只处理 title 和 url，不破坏种子 info hash
+    manipulate:
+      # 清理 title 字段（种子标题）
+      - title:
+          replace:
+            regexp: '[\r\n]+'    # 只清理换行符和回车符（不包括制表符，避免过度清理）
+            format: ' '          # 替换为单个空格
+      - title:
+          replace:
+            regexp: '^\s+|\s+$'  # 清理首尾空白
+            format: ''
+      
+      # 清理 url 字段（种子下载链接）
+      - url:
+          replace:
+            regexp: '[\r\n]+'    # 只清理换行符和回车符
+            format: ''           # 完全删除
+      - url:
+          replace:
+            regexp: '^\s+|\s+$'  # 清理首尾空白
+            format: ''
+
+    # ===== 第一步：过滤不符合条件的种子 =====
     content_size:
       min: 0.0001
       max: 12
@@ -23,13 +72,22 @@ tasks:
       path: /downloads
       space: 25000
 
+    # ===== 第二步：接受所有通过过滤的种子 =====
+    accept_all: yes
+
+    # ===== 第三步：限制每次最多下载 20 个（流量控制） =====
+    limit_new: 20  # 每次运行最多接受 20 个种子
+                   # 20个 × 2次/小时 = 40个/小时（< 100限制）
+                   # 40个 × 24小时 = 960个/天（< 1000限制）
+
+    # ===== 第四步：推送到 Transmission 下载 =====
     transmission:
       host: transmission
       port: 9091
       username: '{? tr_user ?}'
       password: '{? tr_pass ?}'
       path: /downloads/complete
-      addpaused: no
+      add_paused: no
 
   clean_transmission:
     disable: [seen, retry_failed]
