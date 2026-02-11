@@ -1,106 +1,111 @@
 # ===========================================================
-#  FlexGet 配置文件 - 生产级加固版
-#  功能: RSS 自动抓取 + 速率限制 + 数据清洗
+#  FlexGet 配置文件 — Watch Directory 架构 (稳健版)
+#
+#  架构变更 (解决 "unrecognized info" 错误):
+#    旧: FlexGet → RPC直传 → Transmission (HTML错误页面也被推送)
+#    新: FlexGet → 下载.torrent → fail_html拦截 → 保存到/watch/ → Transmission自动拾取
+#
+#  关键修复:
+#    1. fail_html: yes — 拦截 M-Team 返回的 HTML 错误页面
+#    2. download 插件 — 先保存文件，Transmission 自动监控拾取
+#    3. 即使漏网，Transmission 也只是忽略无效 .torrent，不会报错
 # ===========================================================
 
-# 1. 全局调度配置（控制 API 请求频率）
 schedules:
   - tasks: ['mt_free_seed']
     interval:
-      minutes: 30  # 每30分钟运行一次（全天48次请求 << 1000次限制）
+      minutes: 30
   - tasks: ['clean_transmission']
     interval:
       hours: 1
 
 tasks:
   mt_free_seed:
-    # ===== RSS 源配置 =====
+    # ===== RSS 源 =====
     rss:
       url: '{? mt_rss_url ?}'
       all_entries: no
 
-    # ===== 速率限制 (解决 503 Service Unavailable) =====
-    # 强制在同一域名的请求之间等待 5 秒，避免触发 Tracker 速率限制
+    # ===== 速率限制 (防触发 M-Team 反爬) =====
     domain_delay:
-      # 格式: '数字 单位' (单位可以是 seconds/minutes/hours/days/weeks)
-      # 1. 主域名系列
-      m-team.cc: '5 seconds'  # 自动覆盖所有子域名
-      m-team.io: '5 seconds'  # 备用域名
+      m-team.cc: '5 seconds'
+      m-team.io: '5 seconds'
+      rss.m-team.cc: '5 seconds'
+      kp.m-team.cc: '5 seconds'
+      api.m-team.cc: '5 seconds'
+      halomt.com: '5 seconds'
+      manfuz.co: '5 seconds'
 
-      # 2. 具体子域名
-      rss.m-team.cc: '5 seconds'  # RSS API 域名（你的链接）
-      kp.m-team.cc: '5 seconds'   # Tracker 域名
-      api.m-team.cc: '5 seconds'  # API 域名
-
-      # 3. 下载服务器
-      halomt.com: '5 seconds'  # 下载链接域名
-      manfuz.co: '5 seconds'   # 备用下载节点
-
-    # ===== 数据清洗 (解决 ValueError: Header values may not contain linefeed) =====
-    # 仅清理确实存在的字段，避免 "field is not present" 警告
-    # 策略：保守清理，只处理 title 和 url，不破坏种子 info hash
+    # ===== 数据清洗 (防 HTTP Header 换行符) =====
     manipulate:
-      # 清理 title 字段（种子标题）
       - title:
           replace:
-            regexp: '[\r\n]+'    # 只清理换行符和回车符（不包括制表符，避免过度清理）
-            format: ' '          # 替换为单个空格
+            regexp: '[\r\n]+'
+            format: ' '
       - title:
           replace:
-            regexp: '^\s+|\s+$'  # 清理首尾空白
+            regexp: '^\s+|\s+$'
             format: ''
-      
-      # 清理 url 字段（种子下载链接）
       - url:
           replace:
-            regexp: '[\r\n]+'    # 只清理换行符和回车符
-            format: ''           # 完全删除
+            regexp: '[\r\n]+'
+            format: ''
       - url:
           replace:
-            regexp: '^\s+|\s+$'  # 清理首尾空白
+            regexp: '^\s+|\s+$'
             format: ''
 
-    # ===== 第一步：过滤不符合条件的种子 =====
+    # ===== 种子大小过滤 =====
     content_size:
       min: 0.0001
       max: 12
       strict: no
 
-    seen: yes
+    # ===== seen: 仅本任务内记录 =====
+    seen:
+      local: yes
+      fields:
+        - url
 
+    # ===== 失败重试 =====
+    retry_failed:
+      retry_time: 30 minutes
+      retry_time_multiplier: 1
+      max_retries: 10
+
+    # ===== 磁盘保护 =====
     free_space:
       path: /downloads
       space: 25000
 
-    # ===== 第二步：接受所有通过过滤的种子 =====
+    # ===== 接受所有通过过滤的种子 =====
     accept_all: yes
 
-    # ===== 第三步：限制每次最多下载 20 个（流量控制） =====
-    limit_new: 20  # 每次运行最多接受 20 个种子
-                   # 20个 × 2次/小时 = 40个/小时（< 100限制）
-                   # 40个 × 24小时 = 960个/天（< 1000限制）
+    # ===== 每次最多处理 20 个 =====
+    limit_new: 20
 
-    # ===== 第四步：推送到 Transmission 下载 =====
-    transmission:
-      host: transmission
-      port: 9091
-      username: '{? tr_user ?}'
-      password: '{? tr_pass ?}'
-      path: /downloads/complete
-      add_paused: no
+    # ===== 核心修复: 下载 .torrent 到 watch 目录 =====
+    # 替代原来的 transmission: RPC 直传
+    # fail_html: yes — 如果 M-Team 返回 HTML 错误页面，直接拒绝
+    # Transmission 自动监控 /watch/ 目录并拾取有效 .torrent 文件
+    download:
+      path: /watch/
+      fail_html: yes
+      temp: /config/.tmp/
 
+  # ===== 清理任务: 移除 Transmission 中的错误种子 =====
   clean_transmission:
     disable: [seen, retry_failed]
     from_transmission:
-      host: transmission
-      port: 9091
+      host: '{? tr_host ?}'
+      port: '{? tr_port ?}'
       username: '{? tr_user ?}'
       password: '{? tr_pass ?}'
     if:
       - transmission_status == 'stopped' and transmission_errorString != '':
           transmission:
-            host: transmission
-            port: 9091
+            host: '{? tr_host ?}'
+            port: '{? tr_port ?}'
             username: '{? tr_user ?}'
             password: '{? tr_pass ?}'
             action: purge

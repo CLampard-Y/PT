@@ -103,6 +103,7 @@ services:
     volumes:
       - ./config/flexget:/config
       - ./data:/downloads
+      - ./watch:/watch
       - /etc/localtime:/etc/localtime:ro
 
     logging:
