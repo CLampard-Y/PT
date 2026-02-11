@@ -1,14 +1,9 @@
 # ===========================================================
-#  FlexGet 配置文件 — Watch Directory 架构 (稳健版)
+#  FlexGet — 收藏列表自动下载 (Watch Directory 架构)
 #
-#  架构变更 (解决 "unrecognized info" 错误):
-#    旧: FlexGet → RPC直传 → Transmission (HTML错误页面也被推送)
-#    新: FlexGet → 下载.torrent → fail_html拦截 → 保存到/watch/ → Transmission自动拾取
-#
-#  关键修复:
-#    1. fail_html: yes — 拦截 M-Team 返回的 HTML 错误页面
-#    2. download 插件 — 先保存文件，Transmission 自动监控拾取
-#    3. 即使漏网，Transmission 也只是忽略无效 .torrent，不会报错
+#  RSS 来源: M-Team 收藏列表 (用户手动收藏的小体积种子)
+#  策略: 下载 RSS 中所有种子，不遗漏，不重复
+#  架构: FlexGet 下载 .torrent → /watch/ → Transmission 自动拾取
 # ===========================================================
 
 schedules:
@@ -21,12 +16,15 @@ schedules:
 
 tasks:
   mt_free_seed:
-    # ===== RSS 源 =====
     rss:
       url: '{? mt_rss_url ?}'
-      all_entries: no
+      all_entries: yes
 
-    # ===== 速率限制 (防触发 M-Team 反爬) =====
+    # 禁用 remember_rejected（防止与 seen 冲突导致无限循环）
+    disable:
+      - remember_rejected
+
+    # 速率限制（防触发 M-Team 反爬）
     domain_delay:
       m-team.cc: '5 seconds'
       m-team.io: '5 seconds'
@@ -36,7 +34,7 @@ tasks:
       halomt.com: '5 seconds'
       manfuz.co: '5 seconds'
 
-    # ===== 数据清洗 (防 HTTP Header 换行符) =====
+    # 数据清洗（防 HTTP Header 换行符）
     manipulate:
       - title:
           replace:
@@ -55,57 +53,48 @@ tasks:
             regexp: '^\s+|\s+$'
             format: ''
 
-    # ===== 种子大小过滤 =====
-    content_size:
-      min: 0.0001
-      max: 12
-      strict: no
-
-    # ===== seen: 仅本任务内记录 =====
+    # 去重策略：使用 seen 插件基于 title 去重
+    # 原因：
+    # 1. M-Team 的 URL 包含动态 token（passkey、uid 等），每次可能不同
+    # 2. seen_info_hash 需要先下载种子文件才能提取 info hash，无法避免重复下载
+    # 3. 种子的 title 是固定的，可以作为唯一标识
+    # 关键：
+    # - 不使用 local 参数，让数据持久化到 SQLite 数据库
+    # - 使用 fields: - title 而不是 url，避免动态 token 问题
+    # - 必须放在 accept_all 之前，在 filter 阶段就过滤掉已下载的种子
     seen:
-      local: yes
       fields:
-        - url
+        - title
 
-    # ===== 失败重试 =====
-    retry_failed:
-      retry_time: 30 minutes
-      retry_time_multiplier: 1
-      max_retries: 10
-
-    # ===== 磁盘保护 =====
+    # 磁盘保护
     free_space:
       path: /downloads
       space: 25000
 
-    # ===== 接受所有通过过滤的种子 =====
+    # 接受所有种子（RSS 已是手动收藏，无需过滤）
     accept_all: yes
 
-    # ===== 每次最多处理 20 个 =====
+    # 每次最多处理 20 个
     limit_new: 20
 
-    # ===== 核心修复: 下载 .torrent 到 watch 目录 =====
-    # 替代原来的 transmission: RPC 直传
-    # fail_html: yes — 如果 M-Team 返回 HTML 错误页面，直接拒绝
-    # Transmission 自动监控 /watch/ 目录并拾取有效 .torrent 文件
+    # 下载 .torrent 到 watch 目录
     download:
       path: /watch/
       fail_html: yes
       temp: /config/.tmp/
 
-  # ===== 清理任务: 移除 Transmission 中的错误种子 =====
   clean_transmission:
     disable: [seen, retry_failed]
     from_transmission:
-      host: '{? tr_host ?}'
-      port: '{? tr_port ?}'
+      host: transmission
+      port: 9091
       username: '{? tr_user ?}'
       password: '{? tr_pass ?}'
     if:
       - transmission_status == 'stopped' and transmission_errorString != '':
           transmission:
-            host: '{? tr_host ?}'
-            port: '{? tr_port ?}'
+            host: transmission
+            port: 9091
             username: '{? tr_user ?}'
             password: '{? tr_pass ?}'
             action: purge

@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 chmod +x "${SCRIPT_DIR}/disk_guard.sh"
 
 # 清除旧的 PT 相关 cron 任务，再添加新的
-(crontab -l 2>/dev/null | grep -v 'disk_guard') | crontab -
+(crontab -l 2>/dev/null | grep -v 'disk_guard' || true) | crontab -
 
 # 确保日志目录存在
 mkdir -p /home/BT/PT_JP/logs

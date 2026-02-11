@@ -251,13 +251,13 @@ if [[ -f "${TR_CONF_BACKUP}" ]]; then
     TR_USER_VAL=$(grep -oP '^TR_USER=\K.*' .env 2>/dev/null || echo 'admin')
     if command -v jq &>/dev/null; then
         jq --arg user "${TR_USER_VAL}" --arg pass "${TR_PASS_VAL}" \
-            '."rpc-username" = $user | ."rpc-password" = $pass' \
+            '."rpc-username" = $user | ."rpc-password" = $pass | ."watch-dir" = "/watch" | ."watch-dir-enabled" = true | ."trash-original-torrent-files" = true' \
             "${TR_CONF}" > "${TR_CONF}.tmp" && mv "${TR_CONF}.tmp" "${TR_CONF}"
-        info "RPC 认证已通过 jq 写入 settings.json"
+        info "RPC 认证 + Watch 目录 + 自动清理 .torrent 已写入 settings.json"
     else
         warn "jq 未安装，尝试 python3 回退..."
         python3 - "${TR_USER_VAL}" "${TR_PASS_VAL}" << 'PYEOF' 2>/dev/null && \
-            info "RPC 认证已通过 python3 写入" || \
+            info "RPC 认证 + Watch 目录 + 自动清理已通过 python3 写入" || \
             warn "自动写入失败，请手动编辑 ${TR_CONF}"
 import json, sys, glob
 conf = glob.glob('./config/transmission/settings.json')[0]
@@ -265,6 +265,9 @@ with open(conf, 'r') as f:
     cfg = json.load(f)
 cfg['rpc-username'] = sys.argv[1]
 cfg['rpc-password'] = sys.argv[2]
+cfg['watch-dir'] = '/watch'
+cfg['watch-dir-enabled'] = True
+cfg['trash-original-torrent-files'] = True
 with open(conf, 'w') as f:
     json.dump(cfg, f, indent=4)
 PYEOF
@@ -311,6 +314,13 @@ else
     warn "请编辑 .env 填入真实 passkey，然后重新运行此脚本"
     warn "或手动编辑: vim ${FG_VARS}"
 fi
+
+# ── 权限修正: 确保 watch 目录和 FlexGet 临时目录可被所有容器读写 ──
+mkdir -p ./watch ./config/flexget/.tmp
+chmod 1777 ./watch
+chown -R "${PUID}:${PGID}" ./config/flexget/.tmp
+info "watch 目录权限已修正 (sticky bit + 全局可写)"
+info "FlexGet .tmp 目录权限已修正 (${PUID}:${PGID})"
 
 # 启动 FlexGet
 info "启动 FlexGet 容器..."

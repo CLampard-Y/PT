@@ -104,6 +104,19 @@ if [[ -n "${INODE_PCT}" ]] && [[ ${INODE_PCT} -ge ${INODE_WARN_PERCENT} ]]; then
     log "⚠️  Inode ${INODE_PCT}% >= ${INODE_WARN_PERCENT}%! 请清理小文件"
 fi
 
+# ---- Watch 目录清理: 删除超过 10 分钟的残留 .torrent 文件 ----
+# 正常情况下 Transmission 几秒内就会拾取 .torrent 文件
+# 超过 10 分钟说明是重复种子或无效文件，安全删除
+WATCH_DIR="/home/BT/PT_JP/watch"
+if [[ -d "${WATCH_DIR}" ]]; then
+    STALE_COUNT=$(find "${WATCH_DIR}" -name '*.torrent' -o -name '*.torrent.added' -mmin +10 2>/dev/null | wc -l)
+    if [[ ${STALE_COUNT} -gt 0 ]]; then
+        find "${WATCH_DIR}" -name '*.torrent' -mmin +10 -delete 2>/dev/null
+        find "${WATCH_DIR}" -name '*.torrent.added' -mmin +10 -delete 2>/dev/null
+        log "🧹 已清理 ${STALE_COUNT} 个残留 .torrent 文件"
+    fi
+fi
+
 # ---- 日志轮转 ----
 if [[ -f "${LOG_FILE}" ]]; then
     tail -1000 "${LOG_FILE}" > "${LOG_FILE}.tmp" 2>/dev/null && \
